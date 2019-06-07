@@ -1,0 +1,484 @@
+#!/bin/bash
+# 'winestall' tries to automate installation and maintenance of programs
+# in specific wine prefixes without using a GUI or special configs. This script
+# is quite verbose and interactive in order to aid users of all levels.
+#
+# Copyright (c) 2019 ServusCarolus (Charles P. Schaum)
+#
+#-----------------------------------
+# Some functions are defined here.
+
+pause () {
+    echo ""
+    read -rsp $'Press any key to continue...\n' -n1 key
+}
+
+# Here we only allow things to be okay if Y or y are pressed. The default
+# is that things are not okay.
+only_if_yes () {
+    okay_value=false
+    echo ""
+    read -rsp $'Press Y or y to affirm; any other to decline.\n' -n1 key
+    if [ "$key" = 'y' ] || [ "$key" = 'Y' ]
+    then
+        okay_value=true
+    fi
+}
+
+# We print a message about the log file if logging is active.
+log_message () {
+    echo ""
+    if [ $logging = false ]
+    then
+        echo "No logging was done for this session."
+    else
+        echo "The log file is: $logname"
+    fi
+}
+
+bad_end () {
+    log_message
+    exit 1
+}
+
+abort_if_not_okay () {
+    only_if_yes
+    if [ $okay_value = false ]
+    then
+        echo ""
+        echo "Aborting script."
+        bad_end
+    fi
+}
+
+stop_if_not_okay () {
+    only_if_yes
+    if [ $okay_value = false ]
+    then
+        log_message
+        exit 0
+    fi
+}
+
+# Default console output help / error message
+message () {
+    echo ""
+    echo "Winestall runs a specified file, wine builtin, or native OS command"
+    echo "with reference to a specified wine prefix."
+    echo ""
+    echo "USAGE: winestall <path> <program> <args>"
+    echo "       winestall <path> <program> winecfg <args>"
+    echo "       winestall <path> <program> nolog <args>"
+    echo "       winestall <path> <program> winecfg_nolog <args>"
+    echo ""
+    echo "One can use either absolute or relative paths. An absolute path"
+    echo "is specified from root, e.g.: '/home/user/dir'."
+    echo ""
+    echo "The 'winecfg' argument forces winecfg to run before the program."
+    echo "The 'nolog' argument prevents logging."
+    echo "The 'winecfg_nolog' argument does both the above."
+    echo ""
+    echo "Set the MY_WINE environment variable if you have a custom"
+    echo "wine binary. Otherwise this script prefers a wine binary in"
+    echo "'/usr/local/bin' over '/usr/bin'."
+}
+
+# Successful completion message. We have to qualify "success' because wine
+# can report success despite undocumented behavior and regressions.
+good_end () {
+    echo ""
+    echo "Winestall reported a successful exit."
+    echo ""
+    echo "Do you want (a lot more) verbose information?"
+    stop_if_not_okay
+    echo ""
+    echo "Any .desktop files should be in '~/.local/share/applications/wine'."
+    echo "A recursive directory listing follows (also logged if enabled)."
+    echo ""
+    ls -R ~/.local/share/applications/wine
+    echo ""
+    echo "Icons likely are under '~/.local/share/icons'."
+    echo "A recursive directory listing follows (also logged if enabled)."
+    echo ""
+    ls -R ~/.local/share/icons
+    echo ""
+    echo "Editing .desktop files and managing icons are up to you."
+    echo ""
+    echo "You may have .lnk and .desktop files on your desktop."
+    echo "You must manage them for your specific user environment."
+    log_message
+    exit 0
+}
+
+#-----------------------------------
+# Set a number of variables to their initial values.
+
+# Preset the Boolean answer variable to false.
+okay_value=false
+
+# Set variables for wine locations.
+linux_wine="/usr/bin/wine"
+bsd_wine="/usr/local/bin/wine"
+my_wine="$MY_WINE"
+
+# Set variable for running winecfg
+do_winecfg=false
+
+# Set variable for skipping $3
+skip_argument=false
+
+#-----------------------------------
+# Check program arguments.
+
+# Skip logging for trivial errors in the arguments.
+logging=false
+
+if [ -z "$1" ]
+then
+    message
+    bad_end
+fi
+
+if [ -z "$2" ]
+then
+    message
+    echo ""
+    echo "Missing file, builtin command, or OS command."
+    bad_end
+fi
+
+#-----------------------------------
+# Handle special arguments
+
+if [ "$2" = "nolog" ]
+then
+    echo ""
+    echo "There is a known Windows executable named 'nolog' and"
+    echo "we assume that you are running it."
+    echo "Continue?"
+    abort_if_not_okay
+fi
+
+if [ "$2" = "winecfg_nolog" ]
+then
+    echo ""
+    echo "You probably have missed a wine command."
+    bad_end
+fi
+
+# Set default value for logging from here forward,
+logging=true
+
+if [ "$3" = "nolog" ]
+then
+    echo ""
+    echo "Session not logged."
+    skip_argument=true
+    logging=false
+fi
+
+if [ "$3" = "winecfg_nolog" ]
+then
+    echo ""
+    echo "Session not logged."
+    skip_argument=true
+    logging=false
+    do_winecfg=true
+fi
+
+if [ "$3" = "winecfg" ]
+then
+    skip_argument=true
+    do_winecfg=true
+fi
+
+#-----------------------------------
+# Start logging if selected.
+# Set up a log file in /var/tmp, since it should be kept if a reboot occurs
+
+if [ $logging = true ]
+then
+    now=`date +'%Y%m%d_%H%M%S'`
+    logname="/var/tmp/winestall_$now.log"
+    mkfifo winestall.pipe
+    tee < winestall.pipe $logname &
+    exec &> winestall.pipe
+    rm winestall.pipe
+fi
+
+#-----------------------------------
+# Start reporting to the console and the log file, as applicable.
+
+echo ""
+echo "Starting winestall."
+
+#-----------------------------------
+# Find the intended wine binary. If the environment variable 'MY_WINE'
+# is not set, we assume that the variable 'my_wine' is "".
+
+if [ "$my_wine" = "" ]
+then
+# Default place for wine in many Linux distros
+    if [ -e "$linux_wine" ]
+    then
+        my_wine=$linux_wine
+    fi
+# Default on BSD systems. Also prefers a locally-built version of wine
+# in Linux in /usr/local/bin over the linux default.
+    if [ -e "$bsd_wine" ]
+    then
+        my_wine=$bsd_wine
+    fi
+fi
+
+#-----------------------------------
+# If wine is not found, exit with errors.
+
+if [ "$my_wine" = "" ]
+then
+    echo ""
+    echo "No wine binary was found."
+    echo "Please check your installation."
+    bad_end
+else
+    if [ -e "$my_wine" ]
+    then
+        echo ""
+        echo "The wine binary '$my_wine' was found."
+    else
+        echo ""
+        echo "The custom binary '$my_wine' was not found."
+        echo "Please check your installation."
+    bad_end
+    fi
+fi
+
+#-----------------------------------
+# Bail if the corresponding winecfg is not found.
+
+# We assume that the specified wine binary is collocated with
+# a corresponding winecfg binary corresponding to that build.
+my_winedir="$(dirname $my_wine)"
+my_winecfg="$my_winedir/winecfg"
+if [ -e "$my_winecfg" ]
+then
+    echo ""
+    echo "The winecfg binary '$my_winecfg' was found."
+else
+    echo ""
+    echo "The winecfg binary '$my_winecfg' was not found."
+    echo "Please check your installation."
+    bad_end
+fi
+
+#-----------------------------------
+# Determine if we have a valid wine prefix or if we have to make one.
+
+if [ -e $1 ]
+then
+    if [ -d $1 ]
+    then
+# If the first argument is a directory, we get the absolute pathname.
+        pathname="$(cd $1; pwd)"
+        echo ""
+        echo "The current absolute path is '$pathname'."
+        echo "Checking if it is a valid extant wine prefix."
+# If the directory exists, either we have a wine prefix or not.
+        if [ -e "$1/system.reg" ]
+        then
+            echo ""
+            echo "The path is a valid extant wine prefix."
+        else
+            echo ""
+            echo "The path exists but it is not a valid extant wine prefix."
+            echo "We will run winecfg using this path to make it one."
+            echo "Please proceed with caution."
+            echo ""
+            echo "Do you want to continue?"
+        abort_if_not_okay
+# Here we should run winecfg. Thus we set the variable do_winecfg if we
+# are not running winecfg as the primary command.
+        if [ "$2" != "winecfg" ]
+            then
+                do_winecfg=true
+            fi
+        fi
+    else
+# If the first argument is not a directory, we bail.
+        echo ""
+        echo "'$1' must be a directory."
+        bad_end
+    fi
+else
+# If the first argument does not exist, we create a directory.
+    echo ""
+    echo "Create directory '$1'?"
+    abort_if_not_okay
+    if mkdir -p "$1"
+    then
+# If directory creation succeeded, then we get its absolute pathname.
+        pathname="$(cd $1; pwd)"
+        echo ""
+        echo "The current absolute path is '$pathname'."
+# Here we should run winecfg. Thus we set the variable do_winecfg if we
+# are not running winecfg as the primary command.
+    if [ "$2" != "winecfg" ]
+    then
+            do_winecfg=true
+    fi
+    else
+# If directory creation failed, we bail.
+        echo ""
+        echo "Creation of directory '$1' failed."
+        echo "Check file permissions or special files."
+    bad_end
+    fi
+fi      
+
+# We prevent running winecfg twice.
+if [ "$2" = "winecfg" ]
+then
+    echo ""
+    echo "Running winecfg as a post-setup command."
+    do_winecfg=false
+fi
+
+# This manner of running winecfg produces similar
+# operation even when using different wine builds.
+if [ $do_winecfg = true ]
+then
+    echo ""
+    echo "Running winecfg as a setup command"
+    if env WINEPREFIX="$pathname" "$my_winecfg"
+    then
+        echo ""
+        echo "Winecfg exited normally."
+    else
+        echo ""
+        echo "Winecfg exited with errors."
+        bad_end
+    fi
+fi
+
+echo ""
+echo "Preliminary setup is complete. Proceeding to run wine or another"
+echo "command. Some errors or warnings are not fatal."
+echo ""
+echo "Sometimes wine fails in a way where the dialogs are closed and the"
+echo "terminal is waiting for a keypress. Try hitting return or another key"
+echo "to see if the script will terminate before killing the process or"
+echo "closing the terminal window."
+pause
+
+if [ -e $2 ]
+then
+# This is the case where we do find a file, such as 'dosomething.exe'.
+# That means it should not be treated as a builtin or shell command.
+# If the second argument exists, we see if it is an ordinary file
+    if [ -f $2 ]
+    then
+# Skip argument 3 if necessary.
+        if [ $skip_argument = true ]
+        then
+            echo ""
+            echo "Running command $2 in wine prefix '$pathname'."
+            if env WINEPREFIX="$pathname" "$my_wine" $2 $4 $5 $6 $7 $8
+            then
+                good_end
+            else
+                echo ""
+                echo "Wine exited with errors when running $2."
+                bad_end
+            fi
+        else
+# We run a command in a wine prefix.
+            echo ""
+            echo "Running command $2 in wine prefix '$pathname'."
+            if env WINEPREFIX="$pathname" "$my_wine" $2 $3 $4 $5 $6 $7 $8
+            then
+                good_end
+            else
+                echo ""
+                echo "Wine exited with errors when running $2."
+                bad_end
+            fi
+        fi
+    else
+# If the second argument is not an ordinary file, we came to a bad place.
+        echo ""
+        echo "$2 was expected to be an ordinary file."
+        bad_end
+    fi
+else
+# If the second argument does not exist we try it as a wine builtin.
+    echo ""
+    echo "Attempting to execute $2 as a wine builtin"
+    echo "in prefix '$pathname'."
+# Skip argument 3 if necessary.
+    if [ $skip_argument = true ]
+    then
+        echo ""
+        echo "Running command $2 in wine prefix '$pathname'."
+        if env WINEPREFIX="$pathname" "$my_wine" $2 $4 $5 $6 $7 $8
+        then
+            good_end
+        else
+# If wine gives an error, our last try is as a regular command.
+# If that generates an error, the script halts.
+            echo ""
+            echo "Wine exited with errors when running $2."
+            found=`which $2`
+            if [ "$found" = "" ]
+            then
+                echo ""
+                echo "Error running '$2' command not found."
+                bad_end
+            else
+                echo "Retrying as a regular OS command."
+                if env WINEPREFIX="$pathname" $2 $4 $5 $6 $7 $8
+                then
+                    good_end
+                else
+                    echo ""
+                    echo "Error running $2 as a command."
+                    bad_end
+                fi
+            fi
+        fi
+    else
+# We run a wine builtin command in a wine prefix.
+        echo ""
+        echo "Running command $2 in wine prefix '$pathname'."
+        if env WINEPREFIX="$pathname" "$my_wine" $2 $3 $4 $5 $6 $7 $8
+        then
+            good_end
+        else
+# If wine gives an error, our last try is as a regular command.
+# If that generates an error, the script halts.
+            echo ""
+            echo "Wine exited with errors when running $2."
+            found=`which $2`
+            if [ "$found" = "" ]
+            then
+                echo ""
+                echo "Error running '$2': command not found."
+                bad_end
+            else
+                echo "Retrying as a regular OS command."
+                if env WINEPREFIX="$pathname" $2 $3 $4 $5 $6 $7 $8
+                then
+                    good_end
+                else
+                    echo ""
+                    echo "Error running $2 as a command."
+                    bad_end
+                fi
+            fi
+        fi
+    fi
+fi
+# We should never get here.
+echo ""
+echo "Abnormal script termination. Please file a bug report."
+bad_end
+
