@@ -3,11 +3,12 @@
 # in specific wine prefixes without using a GUI or special configs. This script
 # is quite verbose and interactive in order to aid users of all levels.
 #
-# Copyright (c) 2019 ServusCarolus (Charles P. Schaum)
+# Copyright (c) 2021 ServusCarolus (Charles P. Schaum)
 #
 #-----------------------------------
 # Some functions are defined here.
 
+# Get a keypress and continue.
 pause () {
     echo ""
     read -rsp $'Press any key to continue...\n' -n1 key
@@ -36,11 +37,13 @@ log_message () {
     fi
 }
 
+# Show error message and abort with errors.
 bad_end () {
     log_message
     exit 1
 }
 
+# Show error message and abort with errors unless we press Y or y.
 abort_if_not_okay () {
     only_if_yes
     if [ $okay_value = false ]
@@ -51,6 +54,7 @@ abort_if_not_okay () {
     fi
 }
 
+# Exit the scriot with no errors unless we press Y or y.
 stop_if_not_okay () {
     only_if_yes
     if [ $okay_value = false ]
@@ -58,6 +62,46 @@ stop_if_not_okay () {
         log_message
         exit 0
     fi
+}
+
+# Normal execution of winecfg
+normal_winecfg () {
+    if env WINEPREFIX="$pathname" "$my_winecfg"
+    then
+        echo ""
+        echo "Winecfg exited normally."
+    else
+        echo ""
+        echo "Winecfg exited with errors."
+        bad_end
+    fi
+}
+
+# Special execution of winecfg with a 32-bit prefix in a 64-bit system.
+special_winecfg () {
+    if [ "$sys_arch" = "x86_64" ]
+    then
+        echo ""
+        echo "Do you want a 32-bit wine prefix?"
+        only_if_yes
+        if [ "$okay_value" = true ]
+        then
+            if env WINEPREFIX="$pathname" WINEARCH="win32" "$my_winecfg"
+            then
+                echo ""
+                echo "Winecfg exited normally."
+            else
+                echo ""
+                echo "Winecfg exited with errors."
+                bad_end
+            fi
+        else
+            normal_winecfg
+        fi
+    else
+        normal_winecfg
+    fi
+    okay_value=false
 }
 
 # Default console output help / error message
@@ -123,9 +167,13 @@ my_wine="$MY_WINE"
 
 # Set variable for running winecfg
 do_winecfg=false
+implicit_winecfg=true
 
 # Set variable for skipping $3
 skip_argument=false
+
+# Set variables for dealing with 32-bit wine prefixes in a 64-bit architecture
+sys_arch="$(uname -m)"
 
 #-----------------------------------
 # Check program arguments.
@@ -166,6 +214,11 @@ then
     bad_end
 fi
 
+if [ "$2" = "winecfg" ]
+then
+    implicit_winecfg=false
+fi
+
 # Set default value for logging from here forward,
 logging=true
 
@@ -196,7 +249,7 @@ fi
 # Start logging if selected.
 # Set up a log file in /var/tmp, since it should be kept if a reboot occurs
 
-if [ $logging = true ]
+if [ "$logging" = true ]
 then
     now=`date +'%Y%m%d_%H%M%S'`
     logname="/var/tmp/winestall_$now.log"
@@ -288,17 +341,17 @@ then
         then
             echo ""
             echo "The path is a valid extant wine prefix."
+            do_winecfg=false
         else
             echo ""
-            echo "The path exists but it is not a valid extant wine prefix."
+            echo "The path exists but it is not a valid wine prefix."
             echo "We will run winecfg using this path to make it one."
             echo "Please proceed with caution."
             echo ""
             echo "Do you want to continue?"
-        abort_if_not_okay
-# Here we should run winecfg. Thus we set the variable do_winecfg if we
-# are not running winecfg as the primary command.
-        if [ "$2" != "winecfg" ]
+            abort_if_not_okay
+# Here we should choose to run winecfg implicitly if needed.
+            if [ "$implicit_winecfg" = true ]
             then
                 do_winecfg=true
             fi
@@ -320,44 +373,41 @@ else
         pathname="$(cd $1; pwd)"
         echo ""
         echo "The current absolute path is '$pathname'."
-# Here we should run winecfg. Thus we set the variable do_winecfg if we
-# are not running winecfg as the primary command.
-    if [ "$2" != "winecfg" ]
-    then
+# Here we should choose to run winecfg implicitly if needed.
+        if [ "$implicit_winecfg" = true ]
+        then
             do_winecfg=true
-    fi
+        fi
     else
 # If directory creation failed, we bail.
         echo ""
         echo "Creation of directory '$1' failed."
         echo "Check file permissions or special files."
-    bad_end
+        bad_end
     fi
 fi      
 
-# We prevent running winecfg twice.
-if [ "$2" = "winecfg" ]
+# If we explicitly included winecfg in $2, we handle this special case here.
+# We do not alter the architecture of an extant wine prefix.
+if [ "$implicit_winecfg" = false ]
 then
     echo ""
-    echo "Running winecfg as a post-setup command."
-    do_winecfg=false
+    echo "Running winecfg explicitly, then exiting."
+    if [ -e "$1/system.reg" ]
+    then
+        normal_winecfg
+    else
+        special_winecfg
+    fi
+    good_end
 fi
 
-# This manner of running winecfg produces similar
-# operation even when using different wine builds.
+# Here we run winecfg if the wine prefix is not set up yet.
 if [ $do_winecfg = true ]
 then
     echo ""
-    echo "Running winecfg as a setup command"
-    if env WINEPREFIX="$pathname" "$my_winecfg"
-    then
-        echo ""
-        echo "Winecfg exited normally."
-    else
-        echo ""
-        echo "Winecfg exited with errors."
-        bad_end
-    fi
+    echo "Running winecfg as a setup command before the main one."
+    special_winecfg
 fi
 
 echo ""
@@ -481,4 +531,3 @@ fi
 echo ""
 echo "Abnormal script termination. Please file a bug report."
 bad_end
-
